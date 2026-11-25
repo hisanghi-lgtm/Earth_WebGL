@@ -32,7 +32,7 @@
       <canvas id="globe" width="640" height="640" aria-label="마우스로 돌려 볼 수 있는 3D 지구"></canvas>
       <aside class="controls" aria-label="지구 조작">
         <button id="rotation" type="button">자전 일시정지</button>
-        <label><input id="terrain" type="checkbox" checked> 지형 높이 적용 (35배)</label>
+        <label><input id="terrain" type="checkbox" checked> 지형 높이 적용 (40배)</label>
         <p id="status" role="status">NOAA ETOPO 2022 · 위도·경도 1° 간격</p>
         <p>지구를 드래그해 다른 방향에서 볼 수 있습니다.</p>
       </aside>
@@ -45,7 +45,7 @@
       const triangles = [];
 
 
-      // 극점은 한 번씩 추가하고 중간 위도에는 경도별 정점을 만든다.
+      // 양쪽 극점에는 정점을 하나씩 추가하고, 그 사이의 위도에서는 경도마다 정점을 만든다.
       positions.push(0, 1, 0);
       for (let row = 1; row < latitudeCount; row++) {
         const latitude = Math.PI / 2 - Math.PI * row / latitudeCount;
@@ -79,7 +79,7 @@
 
     function makeTerrain(sphere, elevations) {
       const positions = sphere.positions.map((coordinate, i) =>
-        coordinate * (1 + 35 * elevations[Math.floor(i / 3)] / 6371000));
+        coordinate * (1 + 40 * elevations[Math.floor(i / 3)] / 6371000));
       const normals = new Float32Array(positions.length);
 
       // 면의 외적을 세 정점에 더하면 인접 면을 함께 반영한 법선을 얻는다.
@@ -178,7 +178,7 @@
       const sphere = makeSphere(180, 360);
       if (typeof elevationMeters === 'undefined' ||
           elevationMeters.length !== sphere.positions.length / 3) {
-        throw new Error('elevation.js 파일을 index.html과 같은 폴더에 두세요.');
+        throw new Error('elevation.js 파일을 earth.html과 같은 폴더에 두세요.');
       }
       const terrain = makeTerrain(sphere, elevationMeters);
       function bindAttribute(name, components, values) {

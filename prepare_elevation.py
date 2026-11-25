@@ -1,3 +1,5 @@
+"""Convert the NOAA ETOPO 2022 surface GeoTIFF to the globe's 1° grid."""
+
 import argparse
 import json
 import math
