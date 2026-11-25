@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>3D 지구 기본 모델</title>
+
+  <style>
+    body {
+      margin: 0;
+      background: #0b1523;
+      color: #f6f9fd;
+      font: 16px system-ui, sans-serif;
+    }
+
+    main {
+      width: min(94vw, 1000px);
+      margin: 20px auto;
+    }
+
+    header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px 20px;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.5rem, 4vw, 2rem);
+    }
+
+    .author {
+      margin: 0;
+      font-size: 0.875rem;
+      white-space: nowrap;
+    }
+
+    .viewer {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(12rem, 16rem);
+      align-items: start;
+      gap: 20px;
+    }
+
+    canvas {
+      box-sizing: border-box;
+      display: block;
+      width: min(100%, 640px, max(240px, calc(100vh - 104px)));
+      height: auto;
+      justify-self: center;
+      border: 1px solid #314259;
+      border-radius: 12px;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    canvas:active {
+      cursor: grabbing;
+    }
+
+    .controls {
+      display: grid;
+      justify-items: start;
+      gap: 12px;
+      padding: 16px;
+      border: 1px solid #314259;
+      border-radius: 12px;
+    }
+
+    .controls p {
+      margin: 0;
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+
+    p {
+      color: #bed0e5;
+    }
+
+    @media (max-width: 600px) {
+      .viewer {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 12px;
+      }
+
+      .controls {
+        grid-row: 1;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <header>
+      <h1>3D 지구 기본 모델</h1>
+      <p class="author">제작자: 32242521 안상희</p>
+    </header>
+
+    <div class="viewer">
+      <canvas
+        id="globe"
+        width="640"
+        height="640"
+        aria-label="마우스로 돌려 볼 수 있는 3D 지구"
+      ></canvas>
+
+      <aside class="controls" aria-label="지구 조작">
+        <button id="rotation" type="button">자전 일시정지</button>
+
+        <label>
+          <input id="terrain" type="checkbox" checked>
+          지형 높이 적용 (35배)
+        </label>
+
+        <label>
+          <input id="grid" type="checkbox">
+          삼각형 격자
+        </label>
+
+        <p id="status" role="status">NOAA ETOPO 2022 · 위도·경도 1° 간격</p>
+        <p>지구를 드래그해 다른 방향에서 볼 수 있습니다.</p>
+      </aside>
+    </div>
+  </main>
+
+  <script src="elevation.js"></script>
+
+  <script>
+    function makeSphere(latitudeCount, longitudeCount) {
+      const positions = [];
+      const triangles = [];
+      const edges = [];
+
+      // 극점은 한 번씩 추가하고, 중간 위도에는 경도별 정점을 만든다.
+      positions.push(0, 1, 0);
+
+      for (let row = 1; row < latitudeCount; row++) {
+        const latitude = Math.PI / 2 - Math.PI * row / latitudeCount;
+
+        for (let column = 0; column < longitudeCount; column++) {
+          const longitude = -Math.PI + 2 * Math.PI * column / longitudeCount;
+
+          positions.push(
+            Math.cos(latitude) * Math.cos(longitude),
+            Math.sin(latitude),
+            Math.cos(latitude) * Math.sin(longitude)
+          );
+        }
+      }
+
+      const southPole = positions.length / 3;
+      positions.push(0, -1, 0);
+
+      for (let column = 0; column < longitudeCount; column++) {
+        const next = (column + 1) % longitudeCount;
+        triangles.push(0, 1 + next, 1 + column);
+
+        for (let row = 0; row < latitudeCount - 2; row++) {
+          const upper = 1 + row * longitudeCount;
+          const lower = upper + longitudeCount;
+
+          triangles.push(upper + column, upper + next, lower + column);
+          triangles.push(upper + next, lower + next, lower + column);
+        }
+
+        const lastRing = southPole - longitudeCount;
+        triangles.push(lastRing + column, lastRing + next, southPole);
+      }
+
+      // 두 삼각형이 공유하는 모서리는 선으로 한 번만 그린다.
+      const seen = new Set();
+
+      for (let i = 0; i < triangles.length; i += 3) {
+        for (let corner = 0; corner < 3; corner++) {
+          const first = triangles[i + corner];
+          const second = triangles[i + (corner + 1) % 3];
+          const key = Math.min(first, second) + ',' + Math.max(first, second);
+
+          if (!seen.has(key)) {
+            seen.add(key);
+            edges.push(first, second);
+          }
+        }
+      }
+
+      return { positions, triangles, edges };
+    }
+
+    function makeTerrain(sphere, elevations) {
+      const positions = sphere.positions.map(
+        (coordinate, i) =>
+          coordinate * (1 + 35 * elevations[Math.floor(i / 3)] / 6371000)
+      );
+      const normals = new Float32Array(positions.length);
+
+      // 면의 외적을 세 정점에 더하면, 인접 면을 함께 반영한 법선을 얻는다.
+      for (let i = 0; i < sphere.triangles.length; i += 3) {
+        const a = 3 * sphere.triangles[i];
+        const b = 3 * sphere.triangles[i + 1];
+        const c = 3 * sphere.triangles[i + 2];
+
+        const ux = positions[b] - positions[a];
+        const uy = positions[b + 1] - positions[a + 1];
+        const uz = positions[b + 2] - positions[a + 2];
+
+        const vx = positions[c] - positions[a];
+        const vy = positions[c + 1] - positions[a + 1];
+        const vz = positions[c + 2] - positions[a + 2];
+
+        for (const vertex of [a, b, c]) {
+          normals[vertex] += uy * vz - uz * vy;
+          normals[vertex + 1] += uz * vx - ux * vz;
+          normals[vertex + 2] += ux * vy - uy * vx;
+        }
+      }
+
+      for (let i = 0; i < normals.length; i += 3) {
+        const length = Math.hypot(normals[i], normals[i + 1], normals[i + 2]);
+
+        normals[i] /= length;
+        normals[i + 1] /= length;
+        normals[i + 2] /= length;
+      }
+
+      return { positions, normals };
+    }
+
+    function drawSphere() {
+      const canvas = document.getElementById('globe');
+      const gl = canvas.getContext('webgl');
+
+      if (!gl) throw new Error('브라우저에서 WebGL을 사용할 수 없습니다.');
+
+      function compileShader(type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          throw new Error(gl.getShaderInfoLog(shader));
+        }
+
+        return shader;
+      }
+
+      const vertexSource = `
+        attribute vec3 position;
+        attribute vec3 terrainPosition;
+        attribute vec3 terrainNormal;
+        attribute float elevationKm;
+
+        uniform float rotation;
+        uniform float viewPitch;
+        uniform float terrainWeight;
+
+        varying mediump vec3 surfaceNormal;
+        varying mediump float heightKm;
+
+        vec3 orient(vec3 v) {
+          float c = cos(rotation);
+          float s = sin(rotation);
+          vec3 spun = vec3(
+            c * v.x + s * v.z,
+            v.y,
+            -s * v.x + c * v.z
+          );
+          float angle = radians(20.0) + viewPitch;
+
+          return vec3(
+            spun.x,
+            spun.y * cos(angle) - spun.z * sin(angle),
+            spun.y * sin(angle) + spun.z * cos(angle)
+          );
+        }
+
+        void main() {
+          surfaceNormal = orient(mix(position, terrainNormal, terrainWeight));
+          heightKm = elevationKm;
+          gl_Position = vec4(
+            orient(mix(position, terrainPosition, terrainWeight)) * 0.78,
+            1.0
+          );
+        }
+      `;
+
+      const fragmentSource = `
+        precision mediump float;
+
+        uniform bool drawGrid;
+
+        varying mediump vec3 surfaceNormal;
+        varying mediump float heightKm;
+
+        void main() {
+          vec3 ocean = mix(
+            vec3(0.04, 0.12, 0.29),
+            vec3(0.14, 0.51, 0.72),
+            clamp(1.0 + heightKm / 7.0, 0.0, 1.0)
+          );
+          vec3 land = mix(
+            vec3(0.23, 0.55, 0.28),
+            vec3(0.68, 0.43, 0.24),
+            smoothstep(0.3, 2.7, heightKm)
+          );
+          land = mix(
+            land,
+            vec3(0.93, 0.95, 0.98),
+            smoothstep(2.7, 5.5, heightKm)
+          );
+
+          // 6장 shadedSphere1.html 참고하여 표면 법선이 광원 방향으로 갈수록 밝게 표시함
+          vec3 color = heightKm < 0.0 ? ocean : land;
+          if (drawGrid) color = vec3(0.74, 0.87, 0.98);
+
+          vec3 lightDirection = normalize(vec3(-0.65, 0.35, -0.7));
+          float diffuse = max(dot(normalize(surfaceNormal), lightDirection), 0.0);
+          gl_FragColor = vec4(color * (0.50 + 0.50 * diffuse), 1.0);
+        }
+      `;
+
+      const program = gl.createProgram();
+      gl.attachShader(program, compileShader(gl.VERTEX_SHADER, vertexSource));
+      gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, fragmentSource));
+      gl.linkProgram(program);
+
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        throw new Error(gl.getProgramInfoLog(program));
+      }
+
+      gl.useProgram(program);
+
+      const sphere = makeSphere(180, 360);
+
+      if (
+        typeof elevationMeters === 'undefined' ||
+        elevationMeters.length !== sphere.positions.length / 3
+      ) {
+        throw new Error('elevation.js 파일을 index.html과 같은 폴더에 두세요.');
+      }
+
+      const terrain = makeTerrain(sphere, elevationMeters);
+
+      function bindAttribute(name, components, values) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(values), gl.STATIC_DRAW);
+
+        const attribute = gl.getAttribLocation(program, name);
+        gl.vertexAttribPointer(attribute, components, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(attribute);
+      }
+
+      bindAttribute('position', 3, sphere.positions);
+      bindAttribute('terrainPosition', 3, terrain.positions);
+      bindAttribute('terrainNormal', 3, terrain.normals);
+      bindAttribute('elevationKm', 1, elevationMeters.map(meters => meters / 1000));
+
+      const drawGrid = gl.getUniformLocation(program, 'drawGrid');
+      const terrainWeight = gl.getUniformLocation(program, 'terrainWeight');
+      const rotation = gl.getUniformLocation(program, 'rotation');
+      const viewPitch = gl.getUniformLocation(program, 'viewPitch');
+
+      const rotationButton = document.getElementById('rotation');
+      const grid = document.getElementById('grid');
+      const terrainToggle = document.getElementById('terrain');
+
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.enable(gl.DEPTH_TEST);
+      gl.clearColor(0.04, 0.08, 0.14, 1);
+
+      const triangleBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, triangleBuffer);
+      gl.bufferData(
+        gl.ELEMENT_ARRAY_BUFFER,
+        new Uint16Array(sphere.triangles),
+        gl.STATIC_DRAW
+      );
+
+      const edgeBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, edgeBuffer);
+      gl.bufferData(
+        gl.ELEMENT_ARRAY_BUFFER,
+        new Uint16Array(sphere.edges),
+        gl.STATIC_DRAW
+      );
+
+      let spinning = true;
+      let angle = 0;
+      let previousTime = null;
+      let yaw = 0;
+      let pitch = 0;
+      let pointer = null;
+
+      // 4장 trackball.js 드래그 처리 방식 참고
+      // 가로 이동량을 좌우 회전에, 세로 이동량을 상하 회전에 적용하여 지구를 보는 각도를 바꿈
+      canvas.addEventListener('pointerdown', event => {
+        if (event.button !== 0 || pointer !== null) return;
+
+        pointer = {
+          id: event.pointerId,
+          x: event.clientX,
+          y: event.clientY
+        };
+        canvas.setPointerCapture(event.pointerId);
+      });
+
+      canvas.addEventListener('pointermove', event => {
+        if (pointer?.id !== event.pointerId) return;
+
+        const radiansPerPixel = Math.PI / canvas.clientWidth;
+
+        yaw = (yaw - (event.clientX - pointer.x) * radiansPerPixel) % (2 * Math.PI);
+        pitch = Math.max(
+          -Math.PI / 2,
+          Math.min(
+            Math.PI / 2,
+            pitch - (event.clientY - pointer.y) * radiansPerPixel
+          )
+        );
+
+        pointer.x = event.clientX;
+        pointer.y = event.clientY;
+      });
+
+      function stopDragging(event) {
+        if (pointer?.id === event.pointerId) pointer = null;
+      }
+
+      canvas.addEventListener('pointerup', stopDragging);
+      canvas.addEventListener('pointercancel', stopDragging);
+      canvas.addEventListener('lostpointercapture', stopDragging);
+
+      rotationButton.addEventListener('click', () => {
+        spinning = !spinning;
+        rotationButton.textContent = spinning ? '자전 일시정지' : '자전 재생';
+      });
+
+      // 4장 cube.js, cube.html 참고
+      // 프레임 사이에 흐른 시간을 기준으로 자전 각도를 늘려 셰이더에 전달
+      function render(timestamp) {
+        if (spinning && pointer === null && previousTime !== null) {
+          angle = (angle + 0.55 * (timestamp - previousTime) / 1000) % (2 * Math.PI);
+        }
+
+        previousTime = timestamp;
+
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        gl.uniform1f(rotation, angle + yaw);
+        gl.uniform1f(viewPitch, pitch);
+        gl.uniform1f(terrainWeight, terrainToggle.checked ? 1 : 0);
+
+        // 면과 격자 선이 같은 깊이에서 겹치지 않게 한다.
+        gl.enable(gl.POLYGON_OFFSET_FILL);
+        gl.polygonOffset(1, 1);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, triangleBuffer);
+        gl.uniform1i(drawGrid, 0);
+
+        gl.drawElements(
+          gl.TRIANGLES,
+          sphere.triangles.length,
+          gl.UNSIGNED_SHORT,
+          0
+        );
+
+        gl.disable(gl.POLYGON_OFFSET_FILL);
+
+        if (grid.checked) {
+          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, edgeBuffer);
+          gl.uniform1i(drawGrid, 1);
+          gl.drawElements(gl.LINES, sphere.edges.length, gl.UNSIGNED_SHORT, 0);
+        }
+
+        requestAnimationFrame(render);
+      }
+
+      requestAnimationFrame(render);
+    }
+
+    try {
+      drawSphere();
+    } catch (error) {
+      document.getElementById('status').textContent = error.message;
+    }
+  </script>
+</body>
+</html>
